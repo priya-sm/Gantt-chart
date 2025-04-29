@@ -3,98 +3,116 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-# Set page configuration
+# Set page config
 st.set_page_config(layout="wide")
 st.title("📊 Consultant Effort Gantt Chart Generator")
 
-# Ask user to upload an Excel file
+# Upload Excel
 uploaded_file = st.file_uploader("Upload your Excel file", type=["xlsx", "xls"])
 
 if uploaded_file:
-    # Read the uploaded Excel file
     dataset = pd.read_excel(uploaded_file)
 
-    # Rename columns for consistency
-    df_weekly = dataset.copy()
-    df_weekly.rename(columns={
-        "ConsultantName": "name",
-        "ProjectName": "project",
-        "Efforts_Percentage": "effort",
-        "StartDate": "start",
-        "EndDate": "end"
+    # Rename columns
+    df = dataset.copy()
+    df = df.drop_duplicates()
+    df.rename(columns={
+        "ConsultantName": "Name",
+        "ProjectName": "Projects",
+        "Efforts_Percentage": "Effort",
+        "StartDate": "Start",
+        "EndDate": "End"
     }, inplace=True)
 
-    # Convert date columns to datetime and effort to numeric
-    df_weekly['start'] = pd.to_datetime(df_weekly['start'])
-    df_weekly['end'] = pd.to_datetime(df_weekly['end'])
-    df_weekly['effort'] = pd.to_numeric(df_weekly['effort'], errors='coerce')
+    # Convert to correct types
+    df['Start'] = pd.to_datetime(df['Start'])
+    df['End'] = pd.to_datetime(df['End'])
+    df['Effort'] = pd.to_numeric(df['Effort'], errors='coerce')
+    df = df.dropna(subset=['Start', 'End', 'Effort'])
 
-    # Expand data to weekly rows
+    # EXPAND into weeks but KEEP real Start and End
     rows = []
-    for _, row in df_weekly.iterrows():
-        if pd.isnull(row['start']) or pd.isnull(row['end']) or pd.isnull(row['effort']):
-            continue
+    for _, row in df.iterrows():
+        start = row['Start']
+        end = row['End']
+        effort = row['Effort']
+        project = row['Projects']
+        name = row['Name']
 
-        week_start = row['start'] - pd.to_timedelta(row['start'].weekday(), unit='D')
-        last_week = row['end'] - pd.to_timedelta(row['end'].weekday(), unit='D')
+        # Create weekly periods but don't move start to Monday
+        current_start = start
+        while current_start <= end:
+            # Current week's Monday
+            week_start = current_start - pd.to_timedelta(current_start.weekday(), unit='d')
+            week_end = week_start + pd.Timedelta(days=6)
 
-        while week_start <= last_week:
+            # This period's actual start and end
+            period_start = max(current_start, week_start)
+            period_end = min(end, week_end)
+
             rows.append({
-                "name": row['name'],
-                "project": row['project'],
+                "Name": name,
+                "Projects": project,
                 "week_start": week_start,
-                "effort": row['effort']
+                "Start": period_start,
+                "End": period_end,
+                "Effort": effort
             })
-            week_start += pd.Timedelta(weeks=1)
+
+            current_start = week_end + pd.Timedelta(days=1)
 
     expanded_df = pd.DataFrame(rows)
 
-    # Sum efforts
+    # Group and combine project names if multiple
     weekly_sum = (
-        expanded_df.groupby(['name', 'week_start'])['effort']
-        .sum()
+        expanded_df.groupby(['Name', 'week_start', 'Start', 'End'])
+        .agg({
+            'Effort': 'sum',
+            'Projects': lambda x: ', '.join(sorted(x.unique()))
+        })
         .reset_index()
-        .rename(columns={'effort': 'Effort%'})
+        .rename(columns={'Effort': 'Effort%'})
     )
 
-    expanded_df = expanded_df.merge(weekly_sum, on=['name', 'week_start'], how='left')
-    expanded_df['week_end'] = expanded_df['week_start'] + pd.Timedelta(days=6)
+    expanded_df = weekly_sum.copy()
 
     # Filters
-    # Date filter
-    start_date = st.date_input("Start Date", expanded_df['week_start'].min())
-    end_date = st.date_input("End Date", expanded_df['week_start'].max())
+    start_date = st.date_input("Start Date", expanded_df['Start'].min())
+    end_date = st.date_input("End Date", expanded_df['End'].max())
 
-    # Consultant Name filter
-    consultant_names = st.multiselect("Select Consultant(s)", options=expanded_df['name'].unique(), default=expanded_df['name'].unique())
+    consultant_names = st.multiselect("Select Consultant(s)", options=expanded_df['Name'].unique(), default=expanded_df['Name'].unique())
 
-    # Apply filters
-    filtered_df = expanded_df[(expanded_df['week_start'] >= pd.to_datetime(start_date)) & 
-                              (expanded_df['week_start'] <= pd.to_datetime(end_date)) & 
-                              (expanded_df['name'].isin(consultant_names))]
+    filtered_df = expanded_df[
+        (expanded_df['Start'] >= pd.to_datetime(start_date)) &
+        (expanded_df['End'] <= pd.to_datetime(end_date)) &
+        (expanded_df['Name'].isin(consultant_names))
+    ]
 
-    # Plot
+    # Plot Gantt chart
     fig = px.timeline(
         filtered_df,
-        x_start="week_start",
-        x_end="week_end",
-        y="name",
-        color="project",
+        x_start="Start",
+        x_end="End",
+        y="Name",
+        color="Projects",
         hover_data={
-            "name": True,
+            "Name": True,
             "Effort%": ':.2f',
-            "project": True,
-            "week_start": False,
-            "week_end": False
+            "Projects": True,
+            "Start": True,
+            "End": True
         },
-        title="Gantt Chart: Total Effort per Person"
+        title="Gantt Chart: Weekly Effort per Consultant"
     )
 
     fig.update_yaxes(autorange="reversed")
 
-    # Vertical week lines
-    weeks = sorted(filtered_df['week_start'].unique())
-    for week in weeks:
+    # Add vertical week lines
+    min_date = filtered_df['Start'].min().normalize()
+    max_date = filtered_df['End'].max().normalize()
+    week_dates = pd.date_range(start=min_date, end=max_date, freq='W-MON')
+
+    for week in week_dates:
         fig.add_shape(
             type="line",
             x0=week,
@@ -126,14 +144,13 @@ if uploaded_file:
         text="Today",
         showarrow=False,
         font=dict(color="red"),
-        bgcolor="white"
+        bgcolor="White"
     )
 
     fig.update_layout(
         height=600,
         xaxis=dict(
-            tickvals=weeks,
-            ticktext=[w.strftime('%b %d') for w in weeks],
+            tickformat="%b %d",
             tickangle=-45
         ),
         hoverlabel=dict(
@@ -143,7 +160,7 @@ if uploaded_file:
         margin=dict(b=100)
     )
 
-    # Display the plot
-    st.plotly_chart(fig, use_container_width=True)  
+    st.plotly_chart(fig, use_container_width=True)
+
     
 # python -m streamlit run app.py
