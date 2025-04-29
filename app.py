@@ -140,13 +140,13 @@ if uploaded_file:
         x_start="Start",
         x_end="End",
         y="Name",
-        color="Projects",
+        color="Skill",
         hover_data={
             "Name": True,
             "Effort%": ':.2f',
             "Projects": True,
-            "Start": True,
-            "End": True,
+            "Start": False,
+            "End": False,
             "Skill": False
         },
         title="Gantt Chart: Weekly Effort per Consultant"
